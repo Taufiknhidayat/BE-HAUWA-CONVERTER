@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Env & rahasia (JANGAN pernah git add -f file ini)
+.env
+*.log
+.DS_Store
+
+# PDF / data pelanggan asli
+sample/
+*.pdf
