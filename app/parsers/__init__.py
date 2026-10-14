@@ -1,4 +1,6 @@
 """Parser dokumen PDF marketplace. Titik masuk: parse_pdf()."""
+import re
+
 from .errors import EmptyDocumentError, ParseError, PlatformMismatchError, UnknownPlatformError
 from .shopee import parse_shopee
 from .tiktok import parse_tiktok
@@ -7,6 +9,11 @@ from .types import ParsedDocument, ParsedLine
 PARSERS = {'shopee': parse_shopee, 'tiktok': parse_tiktok}
 PLATFORM_LABEL = {'shopee': 'Shopee', 'tiktok': 'TikTok'}
 
+# Varian TikTok yang teksnya rapat bisa kehilangan spasi ("SellerSKU", "OrderID",
+# "Productname"); polanya memakai \s* agar tetap dikenali.
+_TIKTOK_MARKERS = [re.compile(p) for p in
+                   (r'picking\s*list', r'seller\s*sku', r'order\s*id')]
+
 
 def detect_platform(text: str) -> str | None:
     t = text.lower()
@@ -14,7 +21,7 @@ def detect_platform(text: str) -> str | None:
     if 'shopee' in t or 'daftar pesanan per produk' in t:
         return 'shopee'
     # Logo TikTok juga gambar; dokumen "Picking List" dikenali dari judul dan kolomnya.
-    if 'tiktok' in t or ('picking list' in t and 'seller sku' in t and 'order id' in t):
+    if 'tiktok' in t or all(p.search(t) for p in _TIKTOK_MARKERS):
         return 'tiktok'
     return None
 

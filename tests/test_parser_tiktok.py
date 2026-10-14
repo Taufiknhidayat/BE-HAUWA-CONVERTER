@@ -42,3 +42,25 @@ def test_tiktok_header_total_mismatch_warns():
     with pdfplumber.open(io.BytesIO(pdf)) as f:
         doc = parse_pdf(f)
     assert any('Total qty terbaca 12' in w for w in doc.warnings)
+
+
+def test_tiktok_tight_header_without_spaces():
+    """Varian rapat ('tiktok 9.pdf'): header 'Productname'/'SellerSKU'/'OrderID'
+    menempel jadi satu token, tapi kolom tetap terbaca penuh tanpa fallback."""
+    products = [{'name': ['HAUWAM Medina S Sporty -', 'Bergo Instan Melayu'],
+                 'rows': [{'var': 'Hitam', 'seller': 'MEDSPORT.g', 'qty': '1',
+                           'orders': ['585834842804881214']},
+                          {'var': 'Burgundy', 'seller': 'MEDINA.b', 'qty': '1',
+                           'orders': ['585834842804881215']}]}]
+    pdf = build_tiktok_pdf(
+        products, stats='Order quantity: 2   Product quantity: 1   Item quantity: 2',
+        tight_header=True)
+    with pdfplumber.open(io.BytesIO(pdf)) as f:
+        doc = parse_pdf(f)
+    assert doc.platform == 'tiktok'
+    assert doc.warnings == []  # bukan hasil fallback generik
+    assert [(ln.sku, ln.qty, ln.order_no, ln.variant) for ln in doc.lines] == [
+        ('MEDSPORT.g', 1.0, '585834842804881214', 'Hitam'),
+        ('MEDINA.b', 1.0, '585834842804881215', 'Burgundy'),
+    ]
+    assert 'Medina' in (doc.lines[0].product_name or '')

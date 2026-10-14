@@ -17,7 +17,7 @@ from ..schemas import Line, SubmitIn
 CSV_HEADER = [
     'Customer*', 'Order Date', 'Expiration', 'Payment Terms',
     'Order Lines/Products/Database ID', 'Order Lines/Quantity',
-    'Order Lines/Unit Price', 'Order Lines/Taxes', 'Sales Team',
+    'Order Lines/Unit Price', 'Order Lines/Taxes/Database ID', 'Sales Team',
     'Customer Reference', 'Tags',
 ]
 
@@ -87,6 +87,12 @@ def csv_filename(platform: str | None, order_date: str | None,
     return f'{plat}-{stamp}-{name}-{session}.csv'
 
 
+def _group_key(value: str | None, fallback: str) -> str:
+    """Kunci grup toleran kapitalisasi/spasi: "AZZELA ..." dan "Azzela ..." adalah
+    satu produk yang sama sehingga harus menjadi satu Sales Order."""
+    return ' '.join((value or fallback).split()).casefold()
+
+
 def group_orders(body: SubmitIn) -> list[tuple[str | None, list[Line]]]:
     """-> [(customer_ref, baris), ...].
 
@@ -101,7 +107,7 @@ def group_orders(body: SubmitIn) -> list[tuple[str | None, list[Line]]]:
     if body.platform == 'shopee':
         groups: dict[str, list[Line]] = {}
         for ln in body.lines:
-            groups.setdefault(ln.product_name or ln.name, []).append(ln)
+            groups.setdefault(_group_key(ln.product_name, ln.name), []).append(ln)
         return [(_first_ref(lines, body.order_ref), lines) for lines in groups.values()]
     groups: dict[str | None, list[Line]] = {}  # platform lain: per No. Pesanan
     for ln in body.lines:
@@ -126,7 +132,15 @@ def build_quotations_csv(body: SubmitIn) -> str:
                 # ambigu (nama template sama untuk semua varian). Fallback ke
                 # nama PDF hanya bila produk belum dipilih (dicegah di UI).
                 str(ln.product.id) if ln.product else ln.name,
-                _num(ln.qty), _num(ln.price), '', '',
+                _num(ln.qty), _num(ln.price),
+                # Pajak dari produk Odoo sebagai Database ID (unik per record),
+                # koma-dipisah bila >1; kosong bila produk tidak punya pajak.
+                # ID dipakai karena NAMA pajak bisa kembar di Odoo (mis. Sales
+                # vs Purchase bernama sama) sehingga import by-name menolak
+                # ("Found more than one match") — pola yang sama seperti kolom
+                # produk (Products/Database ID).
+                ','.join(str(i) for i in ln.product.tax_ids) if ln.product else '',
+                '',
                 (ref or '') if first else '',  # Customer Reference
                 '',
             ])

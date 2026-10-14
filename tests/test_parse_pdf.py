@@ -18,6 +18,11 @@ def test_detect_tiktok_from_picking_list_columns():
     assert detect_platform('Picking List\nSeller SKU Qty Order ID') == 'tiktok'
 
 
+def test_detect_tiktok_without_spaces_in_markers():
+    """Varian rapat ('tiktok 9.pdf'): penanda tertulis tanpa spasi."""
+    assert detect_platform('Picking List\nProductname SKU SellerSKU Qty OrderID') == 'tiktok'
+
+
 def test_unknown_document_is_rejected():
     from reportlab.pdfgen import canvas
     buf = io.BytesIO()

@@ -106,10 +106,15 @@ def build_tiktok_pdf(
     products: list[dict],
     stats: str = 'Order quantity: 8   Product quantity: 3   Item quantity: 12',
     print_time: str = '09-01_05-59-29',
+    tight_header: bool = False,
 ) -> bytes:
     """Meniru 'Picking List' TikTok.
 
     products: [{'name': [...], 'rows': [{'var': str, 'seller': str, 'qty': str, 'orders': [str]}]}]
+
+    `tight_header` meniru PDF asli yang teksnya rapat: kata header tertulis
+    tanpa spasi ('Productname', 'SellerSKU', 'OrderID') sehingga ekstraksi
+    menghasilkan satu token (kasus nyata 'tiktok 9.pdf').
     """
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=(720, 842))
@@ -123,8 +128,13 @@ def build_tiktok_pdf(
     text(20, 78, f'Print time: {print_time}')
     text(20, 94, stats)
     hy = 130
-    for x, s in [(20, 'No'), (55, 'Product'), (130, 'Product'), (180, 'name'), (280, 'SKU'),
-                 (360, 'Seller'), (395, 'SKU'), (440, 'Qty'), (480, 'Order'), (510, 'ID')]:
+    if tight_header:
+        headers = [(20, 'No'), (55, 'Product'), (130, 'Productname'), (280, 'SKU'),
+                   (360, 'SellerSKU'), (440, 'Qty'), (480, 'OrderID')]
+    else:
+        headers = [(20, 'No'), (55, 'Product'), (130, 'Product'), (180, 'name'), (280, 'SKU'),
+                   (360, 'Seller'), (395, 'SKU'), (440, 'Qty'), (480, 'Order'), (510, 'ID')]
+    for x, s in headers:
         text(x, hy, s, 9, True)
     text(55, hy + 11, 'image', 9, True)
     c.line(15, 842 - hy - 18, 700, 842 - hy - 18)

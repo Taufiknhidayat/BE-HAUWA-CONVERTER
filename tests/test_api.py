@@ -81,6 +81,9 @@ def test_parse_warns_when_sku_matches_multiple_products(client, sample_pdf_bytes
         def find_variants_by_template_names(self, names):
             return {}  # nama+warna tidak bisa menyelamatkan di skenario ini
 
+        def find_variants_by_keywords(self, terms):
+            return {}  # fallback kemiripan nama juga tidak menemukan apa-apa
+
     client.app.dependency_overrides[get_odoo] = DuplicateGateway
     r = _upload(client, sample_pdf_bytes)
     assert r.status_code == 200

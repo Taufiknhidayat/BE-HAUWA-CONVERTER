@@ -9,8 +9,8 @@ from ...schemas import Customer, Health, ProductRef
 
 _TEMPLATES: dict[str, list[dict]] = {
     'HAUWA Hijab - Medina 2.0 Bergo Tanpa Tali jersey Korea': [
-        {'color': 'Maroon', 'price': 89000},
-        {'color': 'Navy', 'price': 89000},
+        {'color': 'Maroon', 'price': 89000, 'taxes': ['PPN 11%'], 'tax_ids': [5]},
+        {'color': 'Navy', 'price': 89000, 'taxes': ['PPN 11%'], 'tax_ids': [5]},
     ],
     'HAUWA Kids - Lolly instan Pashmina Oval Anak': [
         {'color': 'Broken White', 'price': 65000},
@@ -32,7 +32,7 @@ def _build_catalog() -> list[ProductRef]:
             ident += 1
             products.append(ProductRef(
                 id=ident, name=name, code=None, price=v['price'],
-                color=v['color'],
+                color=v['color'], taxes=v.get('taxes', []), tax_ids=v.get('tax_ids', []),
             ))
     return products
 

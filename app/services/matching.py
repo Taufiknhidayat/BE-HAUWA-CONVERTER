@@ -199,6 +199,10 @@ def _fuzzy_variants(
     `find_variants_by_keywords`); disaring yang relevan untuk nama ini dengan aturan
     substring yang sama seperti pencarian `ilike` per-term di gateway, sehingga pool
     kandidat identik dengan panggilan per-nama. Tanpa itu (None), dipanggil per-nama.
+    Kandidat yang namanya sama persis (setelah normalisasi) tetap dipertahankan:
+    jalur exact bisa saja meleset karena gateway tidak mengembalikannya (mis. query
+    ber-spasi ganda tidak cocok `ilike`), dan nama yang sama persis adalah kecocokan
+    terbaik, bukan duplikat yang harus dibuang.
     """
     if name in cache:
         return cache[name]
@@ -208,7 +212,7 @@ def _fuzzy_variants(
     else:
         fetched = [p for p in prefetched
                    if terms and any(t in p.name.casefold() for t in terms)]
-    pool = [p for p in [*already, *fetched] if _norm(p.name) != _norm(name)]
+    pool = [*already, *fetched]
     chosen, similar = _pick_unique_template(name, pool)
     if chosen:
         cache[name] = chosen
@@ -222,8 +226,14 @@ def _fuzzy_variants(
     return None
 
 
-def match_lines(doc: ParsedDocument, odoo: OdooGateway) -> tuple[list[Line], list[str]]:
-    """Cocokkan tiap baris ke produk Odoo.
+def match_documents(
+    docs: list[ParsedDocument], odoo: OdooGateway,
+) -> list[tuple[list[Line], list[str]]]:
+    """Cocokkan tiap baris tiap dokumen ke produk Odoo.
+
+    Lookup Odoo (kode, nama template, kata kunci) dipakai bersama untuk seluruh
+    dokumen dalam satu batch: satu RPC untuk banyak PDF yang produknya beririsan,
+    bukan satu RPC per file. Hasil per dokumen: [(baris, peringatan), ...].
 
     Kaskade pencocokan (untuk Shopee; TikTok cukup lewat kode):
     1. Kode = Internal Reference (`default_code`) unik -> dipakai langsung.
@@ -241,17 +251,20 @@ def match_lines(doc: ParsedDocument, odoo: OdooGateway) -> tuple[list[Line], lis
     beda atau 'Cutton' vs 'Cotton'), dicoba kemiripan token; auto-pilih tetap hanya
     saat kandidat terbaik jelas unik, kalau tidak warning berisi kandidat mirip.
     """
-    warnings: list[str] = []
     by_code: dict[str, ProductRef] = {}
     unresolved_codes: dict[str, list[ProductRef]] = {}
 
     # Dua pencarian independen jalan paralel (masing-masing bisa detik bila Odoo
-    # lambat). Pencarian template memakai semua nama produk di dokumen (superset
-    # dari yang akhirnya butuh) supaya tidak menunggu hasil kode dulu; entri
-    # berlebih tidak dipakai (hanya `.get()` nama yang butuh) jadi aman.
-    skus = [ln.sku for ln in doc.lines if ln.sku]
-    names_all = [n for n in dict.fromkeys(
-        ln.product_name for ln in doc.lines if ln.product_name)]
+    # lambat). Pencarian template memakai gabungan semua nama produk di seluruh
+    # dokumen (superset dari yang akhirnya butuh) supaya tidak menunggu hasil
+    # kode dulu; entri berlebih tidak dipakai jadi aman.
+    skus = [ln.sku for doc in docs for ln in doc.lines if ln.sku]
+    # Query pencarian dinormalisasi spasi (tanpa mengubah kapitalisasi): teks hasil
+    # ekstraksi PDF bisa memuat spasi ganda yang membuat `ilike` Odoo meleset,
+    # padahal template yang dicari sama. Hasilnya dirangkum lewat indeks
+    # ternormalisasi di bawah sehingga kunci query tidak sensitif.
+    names_all = [' '.join(n.split()) for n in dict.fromkeys(
+        ln.product_name for doc in docs for ln in doc.lines if ln.product_name)]
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_codes = ex.submit(odoo.find_products_by_codes, skus) if skus else None
         fut_tmpl = (ex.submit(odoo.find_variants_by_template_names, names_all)
@@ -264,19 +277,31 @@ def match_lines(doc: ParsedDocument, odoo: OdooGateway) -> tuple[list[Line], lis
         else:
             unresolved_codes[code] = products
 
-    need = [ln for ln in doc.lines
-            if ln.product_name and not (ln.sku and ln.sku in by_code)]
-
     # Nama unik yang butuh fallback fuzzy dikumpulkan dulu; kata kuncinya diambil
     # dalam SATU panggilan (bukan 1 RPC per nama) lalu dipartisi per nama.
+    # Pencocokan memakai kunci ternormalisasi (huruf/spasi): kunci dict `lookup`
+    # adalah nama template apa adanya dari Odoo sehingga bisa beda kapitalisasi
+    # dari nama di PDF ("Hauwa ..." vs "HAUWA ..."); `lookup.get(nama_mentah)`
+    # langsung akan meleset dan template yang benar ikut terbuang di filter fuzzy
+    # (nama yang `_norm`-nya sama dianggap sudah ditangani jalur exact).
+    by_norm_name: dict[str, list[ProductRef]] = {}
+    seen_ids: set[int] = set()
+    for variants in lookup.values():
+        for p in variants:
+            if p.id in seen_ids:
+                continue
+            seen_ids.add(p.id)
+            by_norm_name.setdefault(_norm(p.name), []).append(p)
+    need_all = [ln for doc in docs for ln in doc.lines
+                if ln.product_name and not (ln.sku and ln.sku in by_code)]
     exact: dict[str, list[ProductRef]] = {}
     pending: list[str] = []
-    for ln in need:
+    for ln in need_all:
         name = ln.product_name or ''
-        if name not in exact:
-            exact[name] = [p for p in lookup.get(name, [])
-                           if _norm(p.name) == _norm(name)]
-            if not exact[name]:
+        normed = _norm(name)
+        if normed not in exact:
+            exact[normed] = list(by_norm_name.get(normed, []))
+            if not exact[normed]:
                 pending.append(name)
     terms_all = sorted({t for n in pending for t in _search_terms(n)})
     prefetched = odoo.find_variants_by_keywords(terms_all) if terms_all else []
@@ -284,15 +309,15 @@ def match_lines(doc: ParsedDocument, odoo: OdooGateway) -> tuple[list[Line], lis
     by_name: dict[tuple[str, str], ProductRef] = {}
     name_warnings: set[str] = set()
     fuzzy_cache: dict[str, list[ProductRef] | None] = {}
-    for ln in need:
+    for ln in need_all:
         color = _color_of(ln.variant)
         name = ln.product_name or ''
-        key = (name, color or '')
+        key = (_norm(name), color or '')
         if key in by_name:
             continue
-        candidates = exact[name]
+        candidates = exact[_norm(name)]
         if not candidates:
-            variants = _fuzzy_variants(name, odoo, lookup.get(name, []),
+            variants = _fuzzy_variants(name, odoo, by_norm_name.get(_norm(name), []),
                                        fuzzy_cache, name_warnings, prefetched)
             if not variants:
                 continue
@@ -301,30 +326,38 @@ def match_lines(doc: ParsedDocument, odoo: OdooGateway) -> tuple[list[Line], lis
         if pick:
             by_name[key] = pick
 
-    warnings.extend(sorted(name_warnings))
+    results: list[tuple[list[Line], list[str]]] = []
+    for doc in docs:
+        warnings = sorted(name_warnings)
+        for code, products in unresolved_codes.items():
+            already_matched = any(
+                ln.sku == code
+                and (_norm(ln.product_name or ''), _color_of(ln.variant) or '') in by_name
+                for ln in doc.lines
+            )
+            if already_matched:
+                continue
+            names = ', '.join(p.name for p in products)
+            warnings.append(
+                f'SKU "{code}" cocok dengan {len(products)} produk Odoo ({names}); '
+                'baris ditandai belum cocok — pilih manual di tabel.'
+            )
 
-    for code, products in unresolved_codes.items():
-        already_matched = any(
-            ln.sku == code and (ln.product_name, _color_of(ln.variant) or '') in by_name
-            for ln in doc.lines
-        )
-        if already_matched:
-            continue
-        names = ', '.join(p.name for p in products)
-        warnings.append(
-            f'SKU "{code}" cocok dengan {len(products)} produk Odoo ({names}); '
-            'baris ditandai belum cocok — pilih manual di tabel.'
-        )
+        lines = []
+        for ln in doc.lines:
+            product = by_code.get(ln.sku) if ln.sku else None
+            if product is None and ln.product_name:
+                product = by_name.get((_norm(ln.product_name), _color_of(ln.variant) or ''))
+            lines.append(Line(
+                name=ln.name, sku=ln.sku, qty=ln.qty,
+                price=ln.price or (product.price if product else 0),
+                order_no=ln.order_no, product=product,
+                product_name=ln.product_name, variant=ln.variant,
+            ))
+        results.append((lines, warnings))
+    return results
 
-    lines = []
-    for ln in doc.lines:
-        product = by_code.get(ln.sku) if ln.sku else None
-        if product is None and ln.product_name:
-            product = by_name.get((ln.product_name, _color_of(ln.variant) or ''))
-        lines.append(Line(
-            name=ln.name, sku=ln.sku, qty=ln.qty,
-            price=ln.price or (product.price if product else 0),
-            order_no=ln.order_no, product=product,
-            product_name=ln.product_name, variant=ln.variant,
-        ))
-    return lines, warnings
+
+def match_lines(doc: ParsedDocument, odoo: OdooGateway) -> tuple[list[Line], list[str]]:
+    """Cocokkan tiap baris satu dokumen ke produk Odoo (bungkus match_documents)."""
+    return match_documents([doc], odoo)[0]

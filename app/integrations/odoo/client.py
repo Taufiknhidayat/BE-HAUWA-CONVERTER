@@ -8,7 +8,8 @@ from ...config import Settings
 from ...schemas import Customer, Health, ProductRef
 from .base import OdooError
 
-_PRODUCT_FIELDS = ['id', 'name', 'default_code', 'list_price', 'import_attribute_values']
+_PRODUCT_FIELDS = ['id', 'name', 'default_code', 'list_price', 'import_attribute_values',
+                   'taxes_id']
 _COLOR_ATTR_NAMES = ('color', 'warna')
 
 
@@ -19,6 +20,11 @@ def _product(rec: dict) -> ProductRef:
         price=float(rec.get('list_price') or 0),
         color=_color_from_import(rec.get('import_attribute_values')),
     )
+
+
+def _tax_ids(rec: dict) -> list[int]:
+    """Id pajak dari `taxes_id` produk (many2many Odoo berupa list id)."""
+    return [i for i in (rec.get('taxes_id') or []) if isinstance(i, int)]
 
 
 def _color_from_import(values) -> str | None:
@@ -94,6 +100,31 @@ class OdooClient:
             raise OdooError(f'Odoo menolak permintaan ({r.status_code}): {msg}')
         return r.json()
 
+    def _with_taxes(self, recs: list[dict]) -> list[ProductRef]:
+        """Bangun ProductRef dari record produk + nama pajaknya.
+
+        Id pajak (`taxes_id`) di-resolve ke nama lewat SATU `search_read`
+        `account.tax` untuk seluruh id unik (bukan satu RPC per produk); nama
+        di-cache karena master pajak jarang berubah. Tanpa id pajak -> tanpa
+        RPC tambahan, `taxes` tetap kosong.
+        """
+        products = [_product(r) for r in recs]
+        wanted = sorted({i for r in recs for i in _tax_ids(r)})
+        if not wanted:
+            return products
+
+        def load():
+            rows = self._call('account.tax', 'search_read', {
+                'domain': [['id', 'in', wanted]], 'fields': ['id', 'name']})
+            return {r['id']: r['name'] for r in rows}
+
+        names = self._cached_search(('taxes', tuple(wanted)), load)
+        for p, r in zip(products, recs, strict=True):
+            ids = _tax_ids(r)
+            p.tax_ids = ids
+            p.taxes = [names[i] for i in ids if i in names]
+        return products
+
     def health(self) -> Health:
         try:
             self._call('res.partner', 'search_read',
@@ -111,10 +142,10 @@ class OdooClient:
         recs = self._call('product.product', 'search_read', {
             'domain': [['default_code', 'in', codes]], 'fields': _PRODUCT_FIELDS})
         grouped: dict[str, list[ProductRef]] = {}
-        for r in recs:
+        for r, p in zip(recs, self._with_taxes(recs), strict=True):
             code = r.get('default_code')
             if code:
-                grouped.setdefault(code, []).append(_product(r))
+                grouped.setdefault(code, []).append(p)
         return grouped
 
     def find_variants_by_template_names(
@@ -134,10 +165,10 @@ class OdooClient:
             'fields': ['product_tmpl_id', *_PRODUCT_FIELDS]})
         name_by_id = {t['id']: t['name'] for t in templates}
         grouped: dict[str, list[ProductRef]] = {}
-        for r in recs:
+        for r, p in zip(recs, self._with_taxes(recs), strict=True):
             tmpl_id = r.get('product_tmpl_id')
             name = name_by_id.get(tmpl_id[0], r['name']) if tmpl_id else r['name']
-            grouped.setdefault(name, []).append(_product(r))
+            grouped.setdefault(name, []).append(p)
         return grouped
 
     def find_variants_by_keywords(self, terms) -> list[ProductRef]:
@@ -157,10 +188,7 @@ class OdooClient:
         recs = self._call('product.product', 'search_read', {
             'domain': [['product_tmpl_id', 'in', tmpl_ids]],
             'fields': ['product_tmpl_id', *_PRODUCT_FIELDS]})
-        out: list[ProductRef] = []
-        for r in recs:
-            out.append(_product(r))
-        return out
+        return self._with_taxes(recs)
 
     def search_products(self, q: str, limit: int = 20) -> list[ProductRef]:
         def load():
@@ -169,7 +197,7 @@ class OdooClient:
                 'domain': domain,
                 'fields': ['product_tmpl_id', *_PRODUCT_FIELDS],
                 'limit': limit})
-            return [_product(r) for r in recs]
+            return self._with_taxes(recs)
         return self._cached_search(('products', q, limit), load)
 
     def search_customers(self, q: str, limit: int = 20) -> list[Customer]:

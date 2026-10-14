@@ -49,11 +49,22 @@ def _header(words):
     # baris statistik dokumen ('Order/Product/Item quantity') ~41pt di atas.
     # Band 12pt menampung ketiga baris header tanpa menarik statistik/data.
     same = sorted((w for w in words if abs(w['top'] - qty['top']) < 12), key=lambda w: w['x0'])
+
+    def find(key):
+        """Cari kata header: persis dulu, lalu mengandung (varian rapat seperti
+        'SellerSKU'/'OrderID' yang kehilangan spasinya)."""
+        hit = next((w for w in same if w['text'] == key), None)
+        if hit is not None:
+            return hit
+        return next((w for w in same if key in w['text']), None)
+
     no = next((w for w in same if w['text'] == 'No'), None)
-    order = next((w for w in same if w['text'] == 'Order'), None)
-    seller = next((w for w in same if w['text'] == 'Seller'), None)
-    products = [w for w in same if w['text'] == 'Product']
-    skus = [w for w in same if w['text'] == 'SKU' and seller and w['x0'] < seller['x0']]
+    order = find('Order')
+    seller = find('Seller')
+    products = [w for w in same if 'Product' in w['text']]
+    skus = [w for w in same
+            if 'SKU' in w['text'] and 'Seller' not in w['text']
+            and seller and w['x0'] < seller['x0']]
     if not (no and order and seller and len(products) >= 2 and skus):
         return None
 

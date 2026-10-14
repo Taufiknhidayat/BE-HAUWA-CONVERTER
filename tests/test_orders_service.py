@@ -1,3 +1,6 @@
+import csv
+import io
+
 import pytest
 
 from app.schemas import Line, ProductRef, SubmitIn
@@ -65,6 +68,23 @@ def test_shopee_no_split_merges_all_lines():
     assert [(ref, len(ls)) for ref, ls in groups] == [('REF', 2)]
 
 
+def test_shopee_groups_product_names_ignoring_case():
+    """'AZZELA ...' dan 'Azzela ...' adalah satu produk -> satu Sales Order;
+    Customer Reference = nomor pesanan pertama grup."""
+    body = SubmitIn(
+        customer_name='Marketplace - Shopee', order_date='2026-08-25',
+        platform='shopee',
+        lines=[
+            Line(name='AZZELA - Hitam', qty=2, order_no='ORD1', product_name='AZZELA Segitiga',
+                 product=ProductRef(id=1, name='AZZELA Segitiga', code='A1', price=100)),
+            Line(name='Azzela - Putih', qty=1, order_no='ORD2', product_name='Azzela Segitiga',
+                 product=ProductRef(id=2, name='AZZELA Segitiga', code='A2', price=100)),
+        ],
+    )
+    groups = group_orders(body)
+    assert [(ref, len(ls)) for ref, ls in groups] == [('ORD1', 2)]
+
+
 def test_csv_matches_odoo_quotation_template():
     rows = build_quotations_csv(_body()).strip().splitlines()
     assert rows[0].split(',') == CSV_HEADER
@@ -87,6 +107,29 @@ def test_csv_product_column_uses_variant_database_id():
     cols = [r.split(',')[4] for r in build_quotations_csv(body).strip().splitlines()[1:]]
     # Database ID varian; hanya baris tanpa produk yang jatuh ke nama PDF
     assert cols == ['10', '20', 'Belum Cocok']
+
+
+def test_csv_header_maps_relations_to_database_id():
+    """Kolom relasional memakai subfield Database ID supaya Odoo memetakan
+    otomatis (bukan by-name yang ambigu): produk maupun pajak."""
+    assert 'Order Lines/Products/Database ID' in CSV_HEADER
+    assert 'Order Lines/Taxes/Database ID' in CSV_HEADER
+
+
+def test_csv_writes_product_taxes_or_empty():
+    """Pajak ditulis sebagai Database ID (unik); kosong bila produk tidak punya."""
+    body = _body(lines=[
+        Line(name='Kena Pajak', qty=1, price=1000, order_no='A1',
+             product=ProductRef(id=1, name='Kena Pajak', price=1000,
+                                taxes=['PPN 11%'], tax_ids=[5])),
+        Line(name='Kena Dua Pajak', qty=1, price=1000, order_no='A2',
+             product=ProductRef(id=2, name='Kena Dua Pajak', price=1000,
+                                taxes=['PPN 11%', 'PPh 22'], tax_ids=[5, 7])),
+        Line(name='Tanpa Pajak', qty=1, price=1000, order_no='A3',
+             product=ProductRef(id=3, name='Tanpa Pajak', price=1000)),
+    ])
+    rows = list(csv.reader(io.StringIO(build_quotations_csv(body))))[1:]
+    assert [r[7] for r in rows] == ['5', '5,7', '']
 
 
 def test_csv_writes_whole_numbers_without_decimal():

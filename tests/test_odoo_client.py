@@ -74,3 +74,28 @@ def test_search_products_includes_color(monkeypatch):
     client = _client_seq(monkeypatch, [products])
     out = client.search_products('kain')
     assert out[0].color == 'Maroon'
+
+
+def test_product_taxes_resolved_to_names_in_single_call(monkeypatch):
+    """taxes_id produk di-resolve ke nama pajak lewat satu search_read account.tax."""
+    products = [
+        {'id': 1, 'name': 'A', 'default_code': 'A', 'list_price': 1000, 'taxes_id': [5, 7]},
+        {'id': 2, 'name': 'B', 'default_code': 'B', 'list_price': 2000, 'taxes_id': [5]},
+    ]
+    taxes = [{'id': 5, 'name': 'PPN 11%'}, {'id': 7, 'name': 'PPh 22'}]
+    client = _client_seq(monkeypatch, [products, taxes])
+    grouped = client.find_products_by_codes(['A', 'B'])
+    assert grouped['A'][0].taxes == ['PPN 11%', 'PPh 22']
+    assert grouped['A'][0].tax_ids == [5, 7]
+    assert grouped['B'][0].taxes == ['PPN 11%']
+    assert grouped['B'][0].tax_ids == [5]
+
+
+def test_product_without_taxes_makes_no_extra_call(monkeypatch):
+    """Produk tanpa pajak tidak memicu RPC account.tax (respons habis = gagal
+    bila ada panggilan lebih, karena _client_seq pop dari list kosong)."""
+    products = [
+        {'id': 1, 'name': 'A', 'default_code': 'A', 'list_price': 1000, 'taxes_id': []},
+    ]
+    client = _client_seq(monkeypatch, [products])
+    assert client.find_products_by_codes(['A'])['A'][0].taxes == []

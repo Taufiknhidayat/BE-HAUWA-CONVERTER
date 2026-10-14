@@ -344,3 +344,64 @@ def test_color_typo_ambiguous_stays_manual():
         _name_doc(('Raya', 'Marron', None)), _FakeGateway(templates=templates))
     assert lines[0].product is None
     assert any('mirip dengan beberapa varian' in w and 'pilih manual' in w for w in warnings)
+
+
+class _OdooStyleGateway(_FakeGateway):
+    """Meniru OdooClient asli: hasil find_variants_by_template_names dikunci
+    nama template apa adanya dari Odoo (bukan nama yang diminta), dengan
+    pencarian `ilike` yang case-insensitive. Inilah yang dulu membuat beda
+    kapitalisasi ("Hauwa" vs "HAUWA") gagal cocok padahal mock lolos."""
+
+    def find_variants_by_template_names(self, names):
+        wanted = [n for n in dict.fromkeys(names) if n]
+        out = {}
+        for odoo_name, ps in self._templates.items():
+            if any(n.casefold() in odoo_name.casefold() for n in wanted):
+                out[odoo_name] = list(ps)
+        return out
+
+
+def _iris_templates(
+    odoo_name='HAUWA Hijab - Iris Segitiga Bandana melayu Cutton cooltech',
+):
+    return {odoo_name: [
+        ProductRef(id=40, name=odoo_name, color='Black', price=65000),
+        ProductRef(id=41, name=odoo_name, color='Taupe', price=65000),
+    ]}
+
+
+def test_template_name_ignores_case_difference():
+    """Regresi kasus nyata: PDF TikTok 'Hauwa ...' vs Odoo 'HAUWA ...' harus
+    cocok ke varian Black yang tepat (dulu gagal karena kunci lookup mentah,
+    lalu template yang benar ikut terbuang di filter fuzzy)."""
+    templates = _iris_templates()
+    odoo_name = next(iter(templates))
+    lines, warnings = match_lines(
+        _name_doc((odoo_name.replace('HAUWA', 'Hauwa'), 'Black', None)),
+        _OdooStyleGateway(templates=templates))
+    assert lines[0].product == templates[odoo_name][0]
+    assert warnings == []
+
+
+def test_template_name_ignores_case_difference_reversed():
+    """Arah sebaliknya juga harus cocok: PDF 'HAUWA ...' vs Odoo 'Hauwa ...'
+    (kasus Shopee setelah rename kemarin)."""
+    odoo_name = 'Hauwa Hijab - Iris Segitiga Bandana melayu Cutton cooltech'
+    templates = _iris_templates(odoo_name)
+    lines, warnings = match_lines(
+        _name_doc((odoo_name.replace('Hauwa', 'HAUWA'), 'Black', None)),
+        _OdooStyleGateway(templates=templates))
+    assert lines[0].product == templates[odoo_name][0]
+    assert warnings == []
+
+
+def test_template_name_ignores_extra_spaces():
+    """Spasi ganda di PDF tetap cocok ke template Odoo yang sama."""
+    templates = _iris_templates()
+    odoo_name = next(iter(templates))
+    pdf_name = odoo_name.replace('Hauwa Hijab', 'Hauwa  Hijab').replace('HAUWA Hijab', 'HAUWA  Hijab')
+    lines, warnings = match_lines(
+        _name_doc((pdf_name, 'Taupe', None)),
+        _OdooStyleGateway(templates=templates))
+    assert lines[0].product == templates[odoo_name][1]
+    assert warnings == []

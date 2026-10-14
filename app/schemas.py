@@ -8,6 +8,12 @@ class ProductRef(BaseModel):
     code: str | None = None
     price: float = 0  # Sales Price di Odoo
     color: str | None = None  # nilai atribut Color/Warna (varian)
+    # Pajak penjualan produk: nama (taxes, untuk keterbacaan) dan ID mentah
+    # (tax_ids, untuk kolom Taxes di CSV). Nama pajak bisa kembar di Odoo
+    # (mis. Sales vs Purchase) sehingga CSV memakai ID yang unik per record.
+    # Keduanya kosong bila produk tidak punya pajak.
+    taxes: list[str] = []
+    tax_ids: list[int] = []
 
 
 class Customer(BaseModel):
@@ -27,6 +33,8 @@ class Line(BaseModel):
     product_name: str | None = None
     # Varian (warna) di PDF — tambahan informasi; sudah tertanam di `name`.
     variant: str | None = None
+    # Nama file PDF asal baris ini (hasil batch banyak PDF); diabaikan saat CSV.
+    source_file: str | None = None
 
 
 class ParseResult(BaseModel):
@@ -36,6 +44,22 @@ class ParseResult(BaseModel):
     lines: list[Line]
     warnings: list[str] = []
     customer: Customer | None = None  # customer marketplace yang cocok dengan platform
+
+
+class FileFailure(BaseModel):
+    # Satu file dalam batch yang dilewati beserta alasannya.
+    file: str
+    error: str
+
+
+class BatchParseResult(ParseResult):
+    # Hasil penggabungan banyak PDF: daftar nama file yang BERHASIL diproses,
+    # nama file yang disarankan untuk payload CSV (`file_name` di SubmitIn),
+    # dan file yang dilewati beserta alasannya (batch tidak atomik: satu file
+    # gagal tidak membatalkan file lain).
+    files: list[str] = []
+    file_name: str | None = None
+    failed: list[FileFailure] = []
 
 
 class SubmitIn(BaseModel):
